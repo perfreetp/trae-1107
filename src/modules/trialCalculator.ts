@@ -220,24 +220,6 @@ export class TrialCalculator {
       }
 
       resourceUsages.push(this.discountCalculator.calculateResourceUsage(promotion, discountCalc.discountAmount));
-
-      const stepDetail: CalculationStepDetail = {
-        id: promotion.id,
-        name: promotion.name,
-        type: 'promotion',
-        promotionType: promotion.type,
-        baseAmount: matchResult.matchedAmount,
-        discountAmount: discountCalc.discountAmount,
-        affectedItems: matchResult.matchedItems.map((item: CartItem) => ({
-          lineId: item.lineId,
-          skuId: item.skuId,
-          name: item.name,
-          baseAmount: calculateItemTotal(item),
-          shareAmount: 0,
-          finalAmount: calculateItemTotal(item)
-        }))
-      };
-      calculationSteps.push(stepDetail);
     }
 
     promotionResults.forEach((value, key) => {
@@ -259,6 +241,7 @@ export class TrialCalculator {
 
     const appliedCoupons: PromotionResult[] = [];
     const unavailableCoupons: UnavailablePromotion[] = [];
+    const couponCalcMap = new Map<string, CouponCalculation>();
 
     if (couponWallet && couponWallet.coupons.length > 0) {
       const { applied, unavailable } = this.couponHandler.processCouponWallet(
@@ -271,20 +254,7 @@ export class TrialCalculator {
       );
 
       for (const couponCalc of applied) {
-        appliedCoupons.push({
-          promotionId: couponCalc.couponId,
-          promotionName: couponCalc.couponName,
-          promotionType: 'coupon',
-          applied: true,
-          discountAmount: couponCalc.discountAmount,
-          hitReason: '满足优惠券使用条件',
-          affectedItems: couponCalc.affectedItems,
-          displayText: this.resultExplainer.generateCouponDisplayText(
-            couponCalc.coupon,
-            couponCalc.discountAmount
-          )
-        });
-
+        couponCalcMap.set(couponCalc.couponId, couponCalc);
         allocationRequests.push({
           totalDiscount: couponCalc.discountAmount,
           affectedItemIds: couponCalc.affectedItems,
@@ -292,25 +262,6 @@ export class TrialCalculator {
           promotionName: couponCalc.couponName,
           promotionType: 'coupon'
         });
-
-        resourceUsages.push(this.couponHandler.calculateResourceUsage(couponCalc.coupon, couponCalc.discountAmount));
-
-        const stepDetail: CalculationStepDetail = {
-          id: couponCalc.couponId,
-          name: couponCalc.couponName,
-          type: 'coupon',
-          baseAmount: couponCalc.matchedAmount,
-          discountAmount: couponCalc.discountAmount,
-          affectedItems: couponCalc.matchedItems.map(item => ({
-            lineId: item.lineId,
-            skuId: item.skuId,
-            name: item.name,
-            baseAmount: 0,
-            shareAmount: 0,
-            finalAmount: 0
-          }))
-        };
-        calculationSteps.push(stepDetail);
       }
 
       for (const couponCalc of unavailable) {
@@ -323,79 +274,125 @@ export class TrialCalculator {
       }
     }
 
-    const stepItemAmounts = new Map<string, Map<string, number>>();
-    items.forEach(item => {
-      const stepMap = new Map<string, number>();
-      stepMap.set('start', calculateItemTotal(item));
-      stepItemAmounts.set(item.lineId, stepMap);
-    });
+    items = this.discountAllocator.allocateMultipleDiscounts(items, allocationRequests);
 
-    for (let i = 0; i < calculationSteps.length; i++) {
-      const step = calculationSteps[i];
-      const stepAlloc = allocationRequests.find(a => a.promotionId === step.id);
-      
-      for (const affectedItem of step.affectedItems) {
-        const stepMap = stepItemAmounts.get(affectedItem.lineId);
-        if (stepMap) {
-          const prevAmount = stepMap.get(`step_${i - 1}`) || stepMap.get('start') || 0;
-          affectedItem.baseAmount = roundToTwo(prevAmount);
-        }
-      }
+    const actualDiscountMap = new Map<string, number>();
+    const actualShareMap = new Map<string, Map<string, number>>();
 
-      if (stepAlloc) {
-        const stepItems = this.discountAllocator.allocateDiscount({
-          items: items.map(item => ({ ...item })),
-          ...stepAlloc
-        });
-
-        let totalShareForStep = 0;
-        for (const affectedItem of step.affectedItems) {
-          const stepItem = stepItems.find(i => i.lineId === affectedItem.lineId);
-          const origItem = items.find(i => i.lineId === affectedItem.lineId);
-          if (stepItem && origItem) {
-            const share = stepItem.appliedDiscount! - (origItem.appliedDiscount || 0);
-            affectedItem.shareAmount = roundToTwo(Math.max(0, share));
-            totalShareForStep += affectedItem.shareAmount;
+    for (const item of items) {
+      if (item.shareDetail) {
+        for (const share of item.shareDetail) {
+          if (!actualDiscountMap.has(share.promotionId)) {
+            actualDiscountMap.set(share.promotionId, 0);
+            actualShareMap.set(share.promotionId, new Map());
           }
-          affectedItem.finalAmount = roundToTwo(Math.max(0, affectedItem.baseAmount - affectedItem.shareAmount));
-        }
-
-        step.roundingDiff = roundToTwo(step.discountAmount - totalShareForStep);
-        if (Math.abs(step.roundingDiff) > 0.001 && step.affectedItems.length > 0) {
-          const lastItem = step.affectedItems[step.affectedItems.length - 1];
-          lastItem.roundingDiff = step.roundingDiff;
-          lastItem.shareAmount = roundToTwo(lastItem.shareAmount + step.roundingDiff);
-          lastItem.finalAmount = roundToTwo(Math.max(0, lastItem.baseAmount - lastItem.shareAmount));
-        }
-      }
-
-      for (const affectedItem of step.affectedItems) {
-        const stepMap = stepItemAmounts.get(affectedItem.lineId);
-        if (stepMap) {
-          stepMap.set(`step_${i}`, affectedItem.finalAmount);
+          actualDiscountMap.set(share.promotionId, roundToTwo(actualDiscountMap.get(share.promotionId)! + share.discountAmount));
+          actualShareMap.get(share.promotionId)!.set(item.lineId, share.discountAmount);
         }
       }
     }
 
-    items = this.discountAllocator.allocateMultipleDiscounts(items, allocationRequests);
-
-    for (let i = 0; i < calculationSteps.length; i++) {
-      const step = calculationSteps[i];
-      for (const affectedItem of step.affectedItems) {
-        const cartItem = items.find(it => it.lineId === affectedItem.lineId);
-        if (cartItem && cartItem.shareDetail) {
-          const share = cartItem.shareDetail.find(s => s.promotionId === step.id);
-          if (share) {
-            const prevStepMap = stepItemAmounts.get(affectedItem.lineId);
-            if (prevStepMap) {
-              const prevAmount = prevStepMap.get(`step_${i - 1}`) || prevStepMap.get('start') || 0;
-              affectedItem.baseAmount = roundToTwo(prevAmount);
-            }
-            affectedItem.shareAmount = share.discountAmount;
-            affectedItem.finalAmount = roundToTwo(Math.max(0, affectedItem.baseAmount - affectedItem.shareAmount));
-          }
-        }
+    for (let i = 0; i < appliedPromotions.length; i++) {
+      const promo = appliedPromotions[i];
+      const actual = actualDiscountMap.get(promo.promotionId) || 0;
+      appliedPromotions[i] = {
+        ...promo,
+        discountAmount: roundToTwo(actual),
+        displayText: this.resultExplainer.generateDisplayText(
+          promotionResults.get(promo.promotionId)?.promotion!,
+          roundToTwo(actual)
+        )
+      };
+      const usageIdx = resourceUsages.findIndex(u => u.id === promo.promotionId);
+      if (usageIdx >= 0) {
+        resourceUsages[usageIdx].estimatedBudgetConsumption = roundToTwo(actual);
       }
+    }
+
+    for (const [couponId, couponCalc] of couponCalcMap) {
+      const actualDiscount = actualDiscountMap.get(couponId) || 0;
+      appliedCoupons.push({
+        promotionId: couponId,
+        promotionName: couponCalc.couponName,
+        promotionType: 'coupon',
+        applied: true,
+        discountAmount: roundToTwo(actualDiscount),
+        hitReason: '满足优惠券使用条件',
+        affectedItems: couponCalc.affectedItems,
+        displayText: this.resultExplainer.generateCouponDisplayText(
+          couponCalc.coupon,
+          roundToTwo(actualDiscount)
+        )
+      });
+      resourceUsages.push(this.couponHandler.calculateResourceUsage(couponCalc.coupon, roundToTwo(actualDiscount)));
+    }
+
+    calculationSteps.length = 0;
+    const stepItemAmounts = new Map<string, number[]>();
+    items.forEach(item => {
+      stepItemAmounts.set(item.lineId, [calculateItemTotal(item)]);
+    });
+
+    const allStepIds = [...appliedPromotions.map(p => p.promotionId), ...appliedCoupons.map(c => c.promotionId)];
+
+    for (const stepId of allStepIds) {
+      const isPromo = optimalPromotionIds.includes(stepId);
+      const promoResult = isPromo ? appliedPromotions.find(p => p.promotionId === stepId) : null;
+      const couponResult = !isPromo ? appliedCoupons.find(c => c.promotionId === stepId) : null;
+      const stepAlloc = allocationRequests.find(a => a.promotionId === stepId);
+      if (!stepAlloc) continue;
+
+      const affectedItems: CalculationStepDetail['affectedItems'] = [];
+      let stepBaseTotal = 0;
+      let stepShareTotal = 0;
+
+      for (const lineId of stepAlloc.affectedItemIds) {
+        const item = items.find(it => it.lineId === lineId);
+        if (!item) continue;
+
+        const amounts = stepItemAmounts.get(lineId)!;
+        const baseAmount = roundToTwo(amounts[amounts.length - 1]);
+        const share = actualShareMap.get(stepId)?.get(lineId) || 0;
+        const finalAmount = roundToTwo(Math.max(0, baseAmount - share));
+
+        affectedItems.push({
+          lineId,
+          skuId: item.skuId,
+          name: item.name,
+          baseAmount,
+          shareAmount: roundToTwo(share),
+          finalAmount
+        });
+
+        stepBaseTotal += baseAmount;
+        stepShareTotal += share;
+        amounts.push(finalAmount);
+      }
+
+      let totalShare = affectedItems.reduce((s, a) => s + a.shareAmount, 0);
+      const expectedTotal = actualDiscountMap.get(stepId) || 0;
+      const roundingDiff = roundToTwo(expectedTotal - totalShare);
+
+      if (Math.abs(roundingDiff) > 0.001 && affectedItems.length > 0) {
+        const lastItem = affectedItems[affectedItems.length - 1];
+        lastItem.roundingDiff = roundingDiff;
+        lastItem.shareAmount = roundToTwo(lastItem.shareAmount + roundingDiff);
+        lastItem.finalAmount = roundToTwo(Math.max(0, lastItem.baseAmount - lastItem.shareAmount));
+        const amounts = stepItemAmounts.get(lastItem.lineId)!;
+        amounts[amounts.length - 1] = lastItem.finalAmount;
+        totalShare = roundToTwo(totalShare + roundingDiff);
+      }
+
+      calculationSteps.push({
+        id: stepId,
+        name: promoResult?.promotionName || couponResult?.promotionName || '',
+        type: isPromo ? 'promotion' : 'coupon',
+        promotionType: isPromo ? promoResult?.promotionType : undefined,
+        baseAmount: roundToTwo(stepBaseTotal),
+        discountAmount: roundToTwo(totalShare),
+        affectedItems,
+        roundingDiff: Math.abs(roundingDiff) > 0.001 ? roundingDiff : undefined
+      });
     }
 
     let finalTotal = items.reduce((sum, item) => sum + (item.finalPrice || 0), 0);

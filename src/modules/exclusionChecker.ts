@@ -118,6 +118,12 @@ export class ExclusionChecker {
       }
     }
 
+    for (const promotion of promotions) {
+      if (promotion.exclusiveWith && promotion.exclusiveWith.includes(coupon.id)) {
+        return false;
+      }
+    }
+
     return true;
   }
 
