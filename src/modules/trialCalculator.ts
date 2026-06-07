@@ -7,7 +7,8 @@ import {
   GiftItem,
   CartItem,
   ResourceUsage,
-  CalculationStepDetail
+  CalculationStepDetail,
+  Coupon
 } from '../types';
 import { ProductMatcher } from './productMatcher';
 import { MemberChecker } from './memberChecker';
@@ -251,6 +252,11 @@ export class TrialCalculator {
       }
     });
 
+    const canCouponStack = (coupon: Coupon): boolean => {
+      const appliedPromotionsList = optimalPromotionIds.map(id => promotions.find(p => p.id === id)!).filter(Boolean);
+      return this.exclusionChecker.canCouponStackWithPromotions(coupon, appliedPromotionsList);
+    };
+
     const appliedCoupons: PromotionResult[] = [];
     const unavailableCoupons: UnavailablePromotion[] = [];
 
@@ -260,22 +266,11 @@ export class TrialCalculator {
         items,
         currentTime,
         member,
-        orderStoreId
+        orderStoreId,
+        canCouponStack
       );
 
       for (const couponCalc of applied) {
-        const canStack = this.couponCanStack(couponCalc, optimalPromotionIds, promotions, couponWallet);
-
-        if (!canStack) {
-          unavailableCoupons.push({
-            promotionId: couponCalc.couponId,
-            promotionName: couponCalc.couponName,
-            reason: '优惠券与当前活动不能叠加',
-            reasonCode: 'EXCLUDED_BY_OTHER'
-          });
-          continue;
-        }
-
         appliedCoupons.push({
           promotionId: couponCalc.couponId,
           promotionName: couponCalc.couponName,
@@ -310,9 +305,9 @@ export class TrialCalculator {
             lineId: item.lineId,
             skuId: item.skuId,
             name: item.name,
-            baseAmount: calculateItemTotal(item),
+            baseAmount: 0,
             shareAmount: 0,
-            finalAmount: calculateItemTotal(item)
+            finalAmount: 0
           }))
         };
         calculationSteps.push(stepDetail);
@@ -328,28 +323,78 @@ export class TrialCalculator {
       }
     }
 
+    const stepItemAmounts = new Map<string, Map<string, number>>();
+    items.forEach(item => {
+      const stepMap = new Map<string, number>();
+      stepMap.set('start', calculateItemTotal(item));
+      stepItemAmounts.set(item.lineId, stepMap);
+    });
+
+    for (let i = 0; i < calculationSteps.length; i++) {
+      const step = calculationSteps[i];
+      const stepAlloc = allocationRequests.find(a => a.promotionId === step.id);
+      
+      for (const affectedItem of step.affectedItems) {
+        const stepMap = stepItemAmounts.get(affectedItem.lineId);
+        if (stepMap) {
+          const prevAmount = stepMap.get(`step_${i - 1}`) || stepMap.get('start') || 0;
+          affectedItem.baseAmount = roundToTwo(prevAmount);
+        }
+      }
+
+      if (stepAlloc) {
+        const stepItems = this.discountAllocator.allocateDiscount({
+          items: items.map(item => ({ ...item })),
+          ...stepAlloc
+        });
+
+        let totalShareForStep = 0;
+        for (const affectedItem of step.affectedItems) {
+          const stepItem = stepItems.find(i => i.lineId === affectedItem.lineId);
+          const origItem = items.find(i => i.lineId === affectedItem.lineId);
+          if (stepItem && origItem) {
+            const share = stepItem.appliedDiscount! - (origItem.appliedDiscount || 0);
+            affectedItem.shareAmount = roundToTwo(Math.max(0, share));
+            totalShareForStep += affectedItem.shareAmount;
+          }
+          affectedItem.finalAmount = roundToTwo(Math.max(0, affectedItem.baseAmount - affectedItem.shareAmount));
+        }
+
+        step.roundingDiff = roundToTwo(step.discountAmount - totalShareForStep);
+        if (Math.abs(step.roundingDiff) > 0.001 && step.affectedItems.length > 0) {
+          const lastItem = step.affectedItems[step.affectedItems.length - 1];
+          lastItem.roundingDiff = step.roundingDiff;
+          lastItem.shareAmount = roundToTwo(lastItem.shareAmount + step.roundingDiff);
+          lastItem.finalAmount = roundToTwo(Math.max(0, lastItem.baseAmount - lastItem.shareAmount));
+        }
+      }
+
+      for (const affectedItem of step.affectedItems) {
+        const stepMap = stepItemAmounts.get(affectedItem.lineId);
+        if (stepMap) {
+          stepMap.set(`step_${i}`, affectedItem.finalAmount);
+        }
+      }
+    }
+
     items = this.discountAllocator.allocateMultipleDiscounts(items, allocationRequests);
 
-    for (const step of calculationSteps) {
-      let totalShareForStep = 0;
+    for (let i = 0; i < calculationSteps.length; i++) {
+      const step = calculationSteps[i];
       for (const affectedItem of step.affectedItems) {
-        const cartItem = items.find(i => i.lineId === affectedItem.lineId);
+        const cartItem = items.find(it => it.lineId === affectedItem.lineId);
         if (cartItem && cartItem.shareDetail) {
           const share = cartItem.shareDetail.find(s => s.promotionId === step.id);
           if (share) {
+            const prevStepMap = stepItemAmounts.get(affectedItem.lineId);
+            if (prevStepMap) {
+              const prevAmount = prevStepMap.get(`step_${i - 1}`) || prevStepMap.get('start') || 0;
+              affectedItem.baseAmount = roundToTwo(prevAmount);
+            }
             affectedItem.shareAmount = share.discountAmount;
-            totalShareForStep += share.discountAmount;
+            affectedItem.finalAmount = roundToTwo(Math.max(0, affectedItem.baseAmount - affectedItem.shareAmount));
           }
         }
-        affectedItem.finalAmount = roundToTwo(affectedItem.baseAmount - affectedItem.shareAmount);
-      }
-
-      step.roundingDiff = roundToTwo(step.discountAmount - totalShareForStep);
-      if (Math.abs(step.roundingDiff) > 0.001 && step.affectedItems.length > 0) {
-        step.affectedItems[step.affectedItems.length - 1].roundingDiff = step.roundingDiff;
-        step.affectedItems[step.affectedItems.length - 1].finalAmount = roundToTwo(
-          step.affectedItems[step.affectedItems.length - 1].finalAmount - step.roundingDiff
-        );
       }
     }
 

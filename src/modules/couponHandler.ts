@@ -283,50 +283,87 @@ export class CouponHandler {
     return true;
   }
 
+  private generateSubsets<T>(arr: T[]): T[][] {
+    const subsets: T[][] = [];
+    const n = arr.length;
+    for (let mask = 0; mask < (1 << n); mask++) {
+      const subset: T[] = [];
+      for (let i = 0; i < n; i++) {
+        if (mask & (1 << i)) {
+          subset.push(arr[i]);
+        }
+      }
+      subsets.push(subset);
+    }
+    return subsets;
+  }
+
+  private isCombinationValid(calcs: CouponCalculation[]): boolean {
+    for (let i = 0; i < calcs.length; i++) {
+      for (let j = i + 1; j < calcs.length; j++) {
+        if (!this.areCouponsStackable(calcs[i].coupon, calcs[j].coupon)) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
   getBestCouponCombination(
     couponWallet: CouponWallet,
     items: CartItem[],
     currentTime: string,
     member?: Member,
-    orderStoreId?: string
+    orderStoreId?: string,
+    canStackWithPromotions?: (coupon: Coupon) => boolean
   ): CouponCalculation[] {
     const allCalculations = this.getAvailableCoupons(couponWallet, items, currentTime, member, orderStoreId);
-    const applicable = allCalculations.filter(c => c.applicable);
+    let applicable = allCalculations.filter(c => c.applicable);
+
+    if (canStackWithPromotions) {
+      applicable = applicable.filter(c => canStackWithPromotions(c.coupon));
+    }
 
     if (applicable.length === 0) {
       return [];
     }
 
-    applicable.sort((a, b) => b.discountAmount - a.discountAmount);
+    const subsets = this.generateSubsets(applicable);
+    let bestCombination: CouponCalculation[] = [];
+    let bestDiscount = 0;
 
-    const selected: CouponCalculation[] = [];
+    for (const subset of subsets) {
+      if (this.isCombinationValid(subset)) {
+        const totalDiscount = subset.reduce((sum, c) => sum + c.discountAmount, 0);
+        if (totalDiscount > bestDiscount) {
+          bestDiscount = totalDiscount;
+          bestCombination = subset;
+        }
+      }
+    }
+
+    const selectedIds = bestCombination.map(c => c.couponId);
     const skipped: CouponCalculation[] = [];
 
     for (const calc of applicable) {
-      let canUse = true;
-      const conflictingIds: string[] = [];
+      if (!selectedIds.includes(calc.couponId)) {
+        const conflictingWith = bestCombination.filter(selected =>
+          !this.areCouponsStackable(calc.coupon, selected.coupon)
+        ).map(c => c.couponName);
 
-      for (const selectedCalc of selected) {
-        if (!this.areCouponsStackable(calc.coupon, selectedCalc.coupon)) {
-          canUse = false;
-          conflictingIds.push(selectedCalc.couponId);
-        }
-      }
-
-      if (canUse) {
-        selected.push(calc);
-      } else {
         skipped.push({
           ...calc,
           applicable: false,
-          unavailabilityReason: `与已选券互斥：${conflictingIds.map(id => allCalculations.find(c => c.couponId === id)?.couponName || id).join('、')}`,
-          unavailabilityReasonCode: 'EXCLUDED_BY_OTHER',
-          excludedBy: conflictingIds
+          unavailabilityReason: conflictingWith.length > 0
+            ? `与已选券互斥：${conflictingWith.join('、')}`
+            : '未选入最优组合',
+          unavailabilityReasonCode: conflictingWith.length > 0 ? 'EXCLUDED_BY_OTHER' : 'NOT_IN_BEST_COMBINATION',
+          excludedBy: conflictingWith.length > 0 ? bestCombination.filter(c => !this.areCouponsStackable(calc.coupon, c.coupon)).map(c => c.couponId) : undefined
         });
       }
     }
 
-    return [...selected, ...skipped];
+    return [...bestCombination, ...skipped];
   }
 
   getSelectedCouponsWithExclusionCheck(
@@ -387,7 +424,8 @@ export class CouponHandler {
     items: CartItem[],
     currentTime: string,
     member?: Member,
-    orderStoreId?: string
+    orderStoreId?: string,
+    canStackWithPromotions?: (coupon: Coupon) => boolean
   ): { applied: CouponCalculation[]; unavailable: CouponCalculation[] } {
     const mode = couponWallet.selectionMode || 'auto';
     let results: CouponCalculation[];
@@ -395,7 +433,7 @@ export class CouponHandler {
     if (mode === 'manual' && couponWallet.selectedCouponIds && couponWallet.selectedCouponIds.length > 0) {
       results = this.getSelectedCouponsWithExclusionCheck(couponWallet, items, currentTime, member, orderStoreId);
     } else {
-      results = this.getBestCouponCombination(couponWallet, items, currentTime, member, orderStoreId);
+      results = this.getBestCouponCombination(couponWallet, items, currentTime, member, orderStoreId, canStackWithPromotions);
     }
 
     const applied = results.filter(r => r.applicable);

@@ -20,20 +20,28 @@ export class DiscountAllocator {
     }
 
     const affectedItems = items.filter(item => affectedItemIds.includes(item.lineId));
-    const affectedTotal = affectedItems.reduce((sum, item) => sum + calculateItemTotal(item), 0);
+    const affectedRemainingTotal = affectedItems.reduce((sum, item) => sum + Math.max(0, (item.finalPrice || calculateItemTotal(item))), 0);
 
-    if (affectedTotal <= 0) {
+    if (affectedRemainingTotal <= 0) {
       return items;
     }
+
+    const actualTotalDiscount = Math.min(totalDiscount, affectedRemainingTotal);
 
     const remainingItems = items.filter(item => !affectedItemIds.includes(item.lineId));
     const allocatedItems: CartItem[] = [];
 
-    let remainingDiscount = totalDiscount;
+    let remainingDiscount = actualTotalDiscount;
 
     for (let i = 0; i < affectedItems.length; i++) {
       const item = affectedItems[i];
+      const itemRemaining = Math.max(0, (item.finalPrice || calculateItemTotal(item)));
       const itemTotal = calculateItemTotal(item);
+
+      if (itemRemaining <= 0) {
+        allocatedItems.push(item);
+        continue;
+      }
 
       let itemDiscount = 0;
 
@@ -44,14 +52,16 @@ export class DiscountAllocator {
           itemDiscount = roundToTwo(unitDiscount.unitDiscount * quantity);
         }
       } else {
-        const ratio = itemTotal / affectedTotal;
+        const ratio = itemRemaining / affectedRemainingTotal;
         if (i === affectedItems.length - 1) {
           itemDiscount = roundToTwo(remainingDiscount);
         } else {
-          itemDiscount = roundToTwo(totalDiscount * ratio);
+          itemDiscount = roundToTwo(actualTotalDiscount * ratio);
           remainingDiscount = roundToTwo(remainingDiscount - itemDiscount);
         }
       }
+
+      itemDiscount = Math.min(itemDiscount, itemRemaining);
 
       const shareDetail: DiscountShareDetail = {
         promotionId,
@@ -63,7 +73,7 @@ export class DiscountAllocator {
       const newShareDetail = item.shareDetail ? [...item.shareDetail, shareDetail] : [shareDetail];
 
       const newAppliedDiscount = roundToTwo((item.appliedDiscount || 0) + itemDiscount);
-      const newFinalPrice = roundToTwo(itemTotal - newAppliedDiscount);
+      const newFinalPrice = roundToTwo(Math.max(0, itemTotal - newAppliedDiscount));
       const newPromotionIds = item.promotionIds ? [...item.promotionIds, promotionId] : [promotionId];
 
       allocatedItems.push({
