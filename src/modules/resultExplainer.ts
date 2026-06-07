@@ -85,13 +85,19 @@ export class ResultExplainer {
 
     switch (coupon.type) {
       case 'full_reduction':
-        return `优惠券「${coupon.name}」已减${discountAmount}元`;
+        if (coupon.threshold > 0) {
+          return `「${coupon.name}」满${coupon.threshold}减${coupon.discountAmount}，已减${discountAmount}元`;
+        }
+        return `「${coupon.name}」无门槛减${coupon.discountAmount}，已减${discountAmount}元`;
       case 'full_discount':
-        return `优惠券「${coupon.name}」${(coupon.discountRate! * 10).toFixed(1)}折，已减${discountAmount}元`;
+        if (coupon.threshold > 0) {
+          return `「${coupon.name}」满${coupon.threshold}打${(coupon.discountRate! * 10).toFixed(1)}折，已减${discountAmount}元`;
+        }
+        return `「${coupon.name}」${(coupon.discountRate! * 10).toFixed(1)}折，已减${discountAmount}元`;
       case 'fixed_price':
-        return `优惠券「${coupon.name}」已使用，已减${discountAmount}元`;
+        return `「${coupon.name}」固定价${coupon.fixedPrice}元，已减${discountAmount}元`;
       default:
-        return `优惠券「${coupon.name}」已减${discountAmount}元`;
+        return `「${coupon.name}」已减${discountAmount}元`;
     }
   }
 
@@ -156,7 +162,10 @@ export class ResultExplainer {
 
   explainUnavailableReason(reasonCode: string): string {
     const reasonMap: Record<string, string> = {
-      'NOT_IN_TIME': '活动不在有效期内',
+      'NOT_ENABLED': '活动未启用',
+      'NOT_STARTED': '活动未开始',
+      'EXPIRED': '活动已过期',
+      'NOT_IN_TIME_RANGE': '当前时段不在活动有效时间内',
       'NOT_IN_STORE': '该门店不参与此活动',
       'NOT_IN_SCOPE': '购物车中商品不满足活动范围',
       'MIN_AMOUNT_NOT_MET': '未达到活动最低金额要求',

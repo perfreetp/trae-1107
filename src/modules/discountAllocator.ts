@@ -8,7 +8,7 @@ export interface AllocationRequest {
   promotionId: string;
   promotionName: string;
   promotionType: PromotionType;
-  unitDiscounts?: { lineId: string; unitDiscount: number }[];
+  unitDiscounts?: { lineId: string; unitDiscount: number; discountedQuantity?: number }[];
 }
 
 export class DiscountAllocator {
@@ -40,7 +40,8 @@ export class DiscountAllocator {
       if (unitDiscounts && unitDiscounts.length > 0) {
         const unitDiscount = unitDiscounts.find(u => u.lineId === item.lineId);
         if (unitDiscount) {
-          itemDiscount = roundToTwo(unitDiscount.unitDiscount * item.quantity);
+          const quantity = unitDiscount.discountedQuantity !== undefined ? unitDiscount.discountedQuantity : item.quantity;
+          itemDiscount = roundToTwo(unitDiscount.unitDiscount * quantity);
         }
       } else {
         const ratio = itemTotal / affectedTotal;

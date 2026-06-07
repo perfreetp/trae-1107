@@ -33,9 +33,10 @@ export class RetailPromotionSDK {
     items: any[],
     promotions: Promotion[],
     currentTime: string,
-    member?: any
+    member?: any,
+    orderStoreId?: string
   ): { promotionIds: string[]; totalDiscount: number } {
-    return this.trialCalculator.findBestCombination(items, promotions, currentTime, member);
+    return this.trialCalculator.findBestCombination(items, promotions, currentTime, member, orderStoreId);
   }
 }
 

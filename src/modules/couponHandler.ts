@@ -9,6 +9,7 @@ export interface CouponCalculation {
   discountAmount: number;
   affectedItems: string[];
   unavailabilityReason?: string;
+  coupon: Coupon;
 }
 
 export class CouponHandler {
@@ -16,7 +17,8 @@ export class CouponHandler {
     coupon: Coupon,
     items: CartItem[],
     currentTime: string,
-    member?: Member
+    member?: Member,
+    orderStoreId?: string
   ): CouponCalculation {
     const now = new Date(currentTime);
     const expirationDate = new Date(coupon.expirationDate);
@@ -28,7 +30,8 @@ export class CouponHandler {
         applicable: false,
         discountAmount: 0,
         affectedItems: [],
-        unavailabilityReason: '优惠券已过期'
+        unavailabilityReason: '优惠券已过期',
+        coupon
       };
     }
 
@@ -40,13 +43,14 @@ export class CouponHandler {
           applicable: false,
           discountAmount: 0,
           affectedItems: [],
-          unavailabilityReason: '优惠券已被领取完'
+          unavailabilityReason: '优惠券已被领取完',
+          coupon
         };
       }
     }
 
     const matchedItems = items.filter(item => {
-      if (!isProductInScope(item, coupon.scope)) {
+      if (!isProductInScope(item, coupon.scope, orderStoreId)) {
         return false;
       }
 
@@ -69,7 +73,8 @@ export class CouponHandler {
         applicable: false,
         discountAmount: 0,
         affectedItems: [],
-        unavailabilityReason: `金额未达到优惠券使用门槛，当前 ${matchedAmount.toFixed(2)} 元，需满 ${coupon.scope.minAmount} 元`
+        unavailabilityReason: `金额未达到优惠券使用门槛，当前 ${matchedAmount.toFixed(2)} 元，需满 ${coupon.scope.minAmount} 元`,
+        coupon
       };
     }
 
@@ -80,7 +85,8 @@ export class CouponHandler {
         applicable: false,
         discountAmount: 0,
         affectedItems: [],
-        unavailabilityReason: `数量未达到优惠券使用门槛，当前 ${matchedQuantity} 件，需满 ${coupon.scope.minQuantity} 件`
+        unavailabilityReason: `数量未达到优惠券使用门槛，当前 ${matchedQuantity} 件，需满 ${coupon.scope.minQuantity} 件`,
+        coupon
       };
     }
 
@@ -91,7 +97,8 @@ export class CouponHandler {
         applicable: false,
         discountAmount: 0,
         affectedItems: [],
-        unavailabilityReason: `金额未达到优惠券门槛，当前 ${matchedAmount.toFixed(2)} 元，需满 ${coupon.threshold} 元`
+        unavailabilityReason: `金额未达到优惠券门槛，当前 ${matchedAmount.toFixed(2)} 元，需满 ${coupon.threshold} 元`,
+        coupon
       };
     }
 
@@ -121,7 +128,8 @@ export class CouponHandler {
       couponName: coupon.name,
       applicable: true,
       discountAmount: roundToTwo(discountAmount),
-      affectedItems: matchedItems.map(item => item.lineId)
+      affectedItems: matchedItems.map(item => item.lineId),
+      coupon
     };
   }
 
@@ -129,10 +137,11 @@ export class CouponHandler {
     couponWallet: CouponWallet,
     items: CartItem[],
     currentTime: string,
-    member?: Member
+    member?: Member,
+    orderStoreId?: string
   ): CouponCalculation[] {
     return couponWallet.coupons.map(coupon =>
-      this.calculateCouponDiscount(coupon, items, currentTime, member)
+      this.calculateCouponDiscount(coupon, items, currentTime, member, orderStoreId)
     );
   }
 
@@ -140,9 +149,10 @@ export class CouponHandler {
     couponWallet: CouponWallet,
     items: CartItem[],
     currentTime: string,
-    member?: Member
+    member?: Member,
+    orderStoreId?: string
   ): CouponCalculation | null {
-    const availableCoupons = this.getAvailableCoupons(couponWallet, items, currentTime, member)
+    const availableCoupons = this.getAvailableCoupons(couponWallet, items, currentTime, member, orderStoreId)
       .filter(c => c.applicable)
       .sort((a, b) => b.discountAmount - a.discountAmount);
 
@@ -153,7 +163,8 @@ export class CouponHandler {
     couponWallet: CouponWallet,
     items: CartItem[],
     currentTime: string,
-    member?: Member
+    member?: Member,
+    orderStoreId?: string
   ): CouponCalculation[] {
     if (!couponWallet.selectedCouponIds || couponWallet.selectedCouponIds.length === 0) {
       return [];
@@ -161,6 +172,6 @@ export class CouponHandler {
 
     return couponWallet.coupons
       .filter(c => couponWallet.selectedCouponIds!.includes(c.id))
-      .map(coupon => this.calculateCouponDiscount(coupon, items, currentTime, member));
+      .map(coupon => this.calculateCouponDiscount(coupon, items, currentTime, member, orderStoreId));
   }
 }

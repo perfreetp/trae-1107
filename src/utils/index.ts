@@ -24,7 +24,7 @@ export function isInAnyTimeRange(timeRanges: TimeRange[], currentTime: string): 
   return timeRanges.some(range => isInTimeRange(range, currentTime));
 }
 
-export function isProductInScope(product: Product, scope: PromotionScope): boolean {
+export function isProductInScope(product: Product, scope: PromotionScope, orderStoreId?: string): boolean {
   if (scope.excludeProductIds?.includes(product.skuId)) {
     return false;
   }
@@ -56,12 +56,14 @@ export function isProductInScope(product: Product, scope: PromotionScope): boole
   }
 
   if (scope.storeIds && scope.storeIds.length > 0) {
-    if (!product.storeId || !scope.storeIds.includes(product.storeId)) {
+    const effectiveStoreId = product.storeId || orderStoreId;
+    if (!effectiveStoreId || !scope.storeIds.includes(effectiveStoreId)) {
       return false;
     }
   }
 
-  if (scope.excludeStoreIds?.includes(product.storeId || '')) {
+  const effectiveExcludeStoreId = product.storeId || orderStoreId;
+  if (effectiveExcludeStoreId && scope.excludeStoreIds?.includes(effectiveExcludeStoreId)) {
     return false;
   }
 

@@ -19,7 +19,7 @@ export interface DiscountCalculation {
   discountAmount: number;
   affectedItems: string[];
   gifts?: GiftItem[];
-  unitDiscounts?: { lineId: string; unitDiscount: number }[];
+  unitDiscounts?: { lineId: string; unitDiscount: number; discountedQuantity: number }[];
 }
 
 export class DiscountCalculator {
@@ -121,7 +121,7 @@ export class DiscountCalculator {
     let discountAmount = 0;
     let giftedCount = 0;
     const affectedLineIds: string[] = [];
-    const unitDiscounts: { lineId: string; unitDiscount: number }[] = [];
+    const unitDiscounts: { lineId: string; unitDiscount: number; discountedQuantity: number }[] = [];
 
     for (const item of sortedItems) {
       if (giftedCount >= giftItemsToDiscount) break;
@@ -145,7 +145,11 @@ export class DiscountCalculator {
         discountAmount += unitDiscount * canGiftFromThisItem;
         giftedCount += canGiftFromThisItem;
         affectedLineIds.push(item.lineId);
-        unitDiscounts.push({ lineId: item.lineId, unitDiscount: roundToTwo(unitDiscount) });
+        unitDiscounts.push({
+          lineId: item.lineId,
+          unitDiscount: roundToTwo(unitDiscount),
+          discountedQuantity: canGiftFromThisItem
+        });
       }
     }
 
@@ -213,14 +217,18 @@ export class DiscountCalculator {
 
     let discountAmount = 0;
     const affectedLineIds: string[] = [];
-    const unitDiscounts: { lineId: string; unitDiscount: number }[] = [];
+    const unitDiscounts: { lineId: string; unitDiscount: number; discountedQuantity: number }[] = [];
 
     for (const item of matchedItems) {
       if (item.price > rule.memberPrice) {
         const unitDiscount = item.price - rule.memberPrice;
         discountAmount += unitDiscount * item.quantity;
         affectedLineIds.push(item.lineId);
-        unitDiscounts.push({ lineId: item.lineId, unitDiscount: roundToTwo(unitDiscount) });
+        unitDiscounts.push({
+          lineId: item.lineId,
+          unitDiscount: roundToTwo(unitDiscount),
+          discountedQuantity: item.quantity
+        });
       }
     }
 

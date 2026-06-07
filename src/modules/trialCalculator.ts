@@ -37,7 +37,8 @@ export class TrialCalculator {
 
   calculate(request: TrialRequest): CalculationResult {
     const currentTime = request.currentTime || new Date().toISOString();
-    const { cart, member, promotions, couponWallet } = request;
+    const { cart, member, promotions, couponWallet, storeId } = request;
+    const orderStoreId = storeId || cart.storeId;
 
     const originalTotal = cart.totalAmount;
 
@@ -56,14 +57,44 @@ export class TrialCalculator {
     const unavailablePromotions: UnavailablePromotion[] = [];
 
     for (const promotion of enabledPromotions) {
-      const matchResult = this.productMatcher.matchProductsForPromotion(items, promotion, currentTime);
+      const matchResult = this.productMatcher.matchProductsForPromotion(items, promotion, currentTime, orderStoreId);
 
       if (matchResult.matchedItems.length === 0) {
+        let reasonCode = 'NOT_IN_SCOPE';
+        let reason = '购物车中没有符合活动范围的商品';
+
+        switch (matchResult.status) {
+          case 'disabled':
+            reasonCode = 'NOT_ENABLED';
+            reason = matchResult.statusReason || '活动未启用';
+            break;
+          case 'not_started':
+            reasonCode = 'NOT_STARTED';
+            reason = matchResult.statusReason || '活动未开始';
+            break;
+          case 'expired':
+            reasonCode = 'EXPIRED';
+            reason = matchResult.statusReason || '活动已过期';
+            break;
+          case 'not_in_time_range':
+            reasonCode = 'NOT_IN_TIME_RANGE';
+            reason = matchResult.statusReason || '当前时段不在活动有效时间内';
+            break;
+          case 'not_in_store':
+            reasonCode = 'NOT_IN_STORE';
+            reason = matchResult.statusReason || '当前门店不参与此活动';
+            break;
+          case 'not_in_scope':
+          default:
+            reason = matchResult.statusReason || '购物车中没有符合活动范围的商品';
+            break;
+        }
+
         unavailablePromotions.push(
           this.resultExplainer.generateUnavailablePromotion(
             promotion,
-            '购物车中没有符合活动范围的商品',
-            'NOT_IN_SCOPE'
+            reason,
+            reasonCode
           )
         );
         continue;
@@ -190,7 +221,8 @@ export class TrialCalculator {
         couponWallet,
         items,
         currentTime,
-        member
+        member,
+        orderStoreId
       );
 
       for (const couponCalc of selectedCoupons) {
@@ -216,14 +248,7 @@ export class TrialCalculator {
             hitReason: '满足优惠券使用条件',
             affectedItems: couponCalc.affectedItems,
             displayText: this.resultExplainer.generateCouponDisplayText(
-              {
-                id: couponCalc.couponId,
-                name: couponCalc.couponName,
-                type: 'full_reduction',
-                threshold: 0,
-                scope: {},
-                expirationDate: ''
-              } as any,
+              couponCalc.coupon,
               couponCalc.discountAmount
             )
           });
@@ -294,7 +319,8 @@ export class TrialCalculator {
     items: CartItem[],
     promotions: Promotion[],
     currentTime: string,
-    member?: any
+    member?: any,
+    orderStoreId?: string
   ): { promotionIds: string[]; totalDiscount: number } {
     const currentTimeStr = currentTime || new Date().toISOString();
     const enabledPromotions = promotions.filter(p => p.enabled);
@@ -302,20 +328,35 @@ export class TrialCalculator {
     const discountMap = new Map<string, number>();
 
     for (const promotion of enabledPromotions) {
-      const matchResult = this.productMatcher.matchProductsForPromotion(items, promotion, currentTimeStr);
+      const matchResult = this.productMatcher.matchProductsForPromotion(items, promotion, currentTimeStr, orderStoreId);
       if (matchResult.matchedItems.length === 0) continue;
 
       const memberEligible = this.memberChecker.isMemberEligible(member, promotion.scope);
       if (!memberEligible.eligible) continue;
 
+      if (promotion.type === 'birthday_discount') {
+        const birthdayEligible = this.memberChecker.checkBirthdayDiscountEligible(
+          member,
+          currentTimeStr,
+          (promotion.rule as any).requiredLevels
+        );
+        if (!birthdayEligible.eligible) continue;
+      }
+
       const minReqCheck = this.productMatcher.checkMinRequirements(matchResult, promotion.scope);
       if (!minReqCheck.valid) continue;
 
       const discountCalc = this.discountCalculator.calculate(promotion, matchResult, member);
+
+      if (discountCalc.discountAmount <= 0 && (!discountCalc.gifts || discountCalc.gifts.length === 0)) {
+        continue;
+      }
+
       discountMap.set(promotion.id, discountCalc.discountAmount);
     }
 
-    const optimalIds = this.exclusionChecker.selectOptimalPromotions(enabledPromotions, discountMap);
+    const eligiblePromotions = enabledPromotions.filter(p => discountMap.has(p.id));
+    const optimalIds = this.exclusionChecker.selectOptimalPromotions(eligiblePromotions, discountMap);
     const totalDiscount = optimalIds.reduce((sum, id) => sum + (discountMap.get(id) || 0), 0);
 
     return {
