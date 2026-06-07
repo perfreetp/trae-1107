@@ -153,6 +153,12 @@ export interface Promotion {
   enabled: boolean;
   displayText?: string;
   tags?: string[];
+  totalBudget?: number;
+  usedBudget?: number;
+  totalUsageLimit?: number;
+  usedCount?: number;
+  perUserLimit?: number;
+  userUsedCount?: number;
 }
 
 export interface Coupon {
@@ -172,11 +178,52 @@ export interface Coupon {
   stackableWithPromotions?: boolean;
   exclusiveWith?: string[];
   displayText?: string;
+  totalBudget?: number;
+  usedBudget?: number;
+  perUserLimit?: number;
+  userUsedCount?: number;
 }
+
+export type CouponSelectionMode = 'auto' | 'manual';
 
 export interface CouponWallet {
   coupons: Coupon[];
   selectedCouponIds?: string[];
+  selectionMode?: CouponSelectionMode;
+}
+
+export interface ResourceUsage {
+  id: string;
+  name: string;
+  type: 'promotion' | 'coupon';
+  budgetUsed?: number;
+  budgetRemaining?: number;
+  countUsed?: number;
+  countRemaining?: number;
+  userCountUsed?: number;
+  userCountRemaining?: number;
+  estimatedBudgetConsumption?: number;
+  estimatedCountConsumption?: number;
+}
+
+export interface CalculationStepDetail {
+  id: string;
+  name: string;
+  type: 'promotion' | 'coupon';
+  promotionType?: PromotionType;
+  baseAmount: number;
+  discountAmount: number;
+  affectedItems: {
+    lineId: string;
+    skuId: string;
+    name: string;
+    baseAmount: number;
+    shareAmount: number;
+    finalAmount: number;
+    roundingDiff?: number;
+  }[];
+  roundingDiff?: number;
+  reason?: string;
 }
 
 export interface DiscountShareDetail {
@@ -210,6 +257,8 @@ export interface CalculationResult {
   originalTotal: number;
   finalTotal: number;
   totalDiscount: number;
+  totalPromotionDiscount: number;
+  totalCouponDiscount: number;
   appliedPromotions: PromotionResult[];
   unavailablePromotions: UnavailablePromotion[];
   appliedCoupons: PromotionResult[];
@@ -217,6 +266,8 @@ export interface CalculationResult {
   cartItems: CartItem[];
   gifts: GiftItem[];
   displayMessages: string[];
+  resourceUsages: ResourceUsage[];
+  calculationSteps: CalculationStepDetail[];
 }
 
 export interface TrialRequest {

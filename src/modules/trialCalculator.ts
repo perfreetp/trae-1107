@@ -5,7 +5,9 @@ import {
   UnavailablePromotion,
   Promotion,
   GiftItem,
-  CartItem
+  CartItem,
+  ResourceUsage,
+  CalculationStepDetail
 } from '../types';
 import { ProductMatcher } from './productMatcher';
 import { MemberChecker } from './memberChecker';
@@ -43,6 +45,8 @@ export class TrialCalculator {
     const originalTotal = cart.totalAmount;
 
     let items = this.discountAllocator.initializeItems([...cart.items]);
+    const itemBaseAmounts = new Map<string, number>();
+    items.forEach(item => itemBaseAmounts.set(item.lineId, calculateItemTotal(item)));
 
     const enabledPromotions = promotions.filter(p => p.enabled);
 
@@ -55,6 +59,8 @@ export class TrialCalculator {
     }> = new Map();
 
     const unavailablePromotions: UnavailablePromotion[] = [];
+    const resourceUsages: ResourceUsage[] = [];
+    const calculationSteps: CalculationStepDetail[] = [];
 
     for (const promotion of enabledPromotions) {
       const matchResult = this.productMatcher.matchProductsForPromotion(items, promotion, currentTime, orderStoreId);
@@ -148,6 +154,18 @@ export class TrialCalculator {
         continue;
       }
 
+      const resourceCheck = this.discountCalculator.checkResourceLimits(promotion, discountCalc.discountAmount);
+      if (!resourceCheck.valid) {
+        unavailablePromotions.push(
+          this.resultExplainer.generateUnavailablePromotion(
+            promotion,
+            resourceCheck.reason || '资源不足',
+            resourceCheck.reasonCode || 'RESOURCE_LIMIT'
+          )
+        );
+        continue;
+      }
+
       promotionResults.set(promotion.id, {
         promotion,
         matchResult,
@@ -173,7 +191,7 @@ export class TrialCalculator {
       const result = promotionResults.get(promoId);
       if (!result) continue;
 
-      const { promotion, discountCalc } = result;
+      const { promotion, discountCalc, matchResult } = result;
 
       appliedPromotions.push(
         this.resultExplainer.generatePromotionResult(
@@ -199,6 +217,26 @@ export class TrialCalculator {
       if (discountCalc.gifts) {
         allGifts.push(...discountCalc.gifts);
       }
+
+      resourceUsages.push(this.discountCalculator.calculateResourceUsage(promotion, discountCalc.discountAmount));
+
+      const stepDetail: CalculationStepDetail = {
+        id: promotion.id,
+        name: promotion.name,
+        type: 'promotion',
+        promotionType: promotion.type,
+        baseAmount: matchResult.matchedAmount,
+        discountAmount: discountCalc.discountAmount,
+        affectedItems: matchResult.matchedItems.map((item: CartItem) => ({
+          lineId: item.lineId,
+          skuId: item.skuId,
+          name: item.name,
+          baseAmount: calculateItemTotal(item),
+          shareAmount: 0,
+          finalAmount: calculateItemTotal(item)
+        }))
+      };
+      calculationSteps.push(stepDetail);
     }
 
     promotionResults.forEach((value, key) => {
@@ -217,7 +255,7 @@ export class TrialCalculator {
     const unavailableCoupons: UnavailablePromotion[] = [];
 
     if (couponWallet && couponWallet.coupons.length > 0) {
-      const selectedCoupons = this.couponHandler.getSelectedCoupons(
+      const { applied, unavailable } = this.couponHandler.processCouponWallet(
         couponWallet,
         items,
         currentTime,
@@ -225,57 +263,105 @@ export class TrialCalculator {
         orderStoreId
       );
 
-      for (const couponCalc of selectedCoupons) {
-        if (couponCalc.applicable) {
-          const canStack = this.couponCanStack(couponCalc, optimalPromotionIds, promotions, couponWallet);
+      for (const couponCalc of applied) {
+        const canStack = this.couponCanStack(couponCalc, optimalPromotionIds, promotions, couponWallet);
 
-          if (!canStack) {
-            unavailableCoupons.push({
-              promotionId: couponCalc.couponId,
-              promotionName: couponCalc.couponName,
-              reason: '优惠券与当前活动不能叠加',
-              reasonCode: 'EXCLUDED_BY_OTHER'
-            });
-            continue;
-          }
-
-          appliedCoupons.push({
-            promotionId: couponCalc.couponId,
-            promotionName: couponCalc.couponName,
-            promotionType: 'coupon',
-            applied: true,
-            discountAmount: couponCalc.discountAmount,
-            hitReason: '满足优惠券使用条件',
-            affectedItems: couponCalc.affectedItems,
-            displayText: this.resultExplainer.generateCouponDisplayText(
-              couponCalc.coupon,
-              couponCalc.discountAmount
-            )
-          });
-
-          allocationRequests.push({
-            totalDiscount: couponCalc.discountAmount,
-            affectedItemIds: couponCalc.affectedItems,
-            promotionId: couponCalc.couponId,
-            promotionName: couponCalc.couponName,
-            promotionType: 'coupon'
-          });
-        } else {
+        if (!canStack) {
           unavailableCoupons.push({
             promotionId: couponCalc.couponId,
             promotionName: couponCalc.couponName,
-            reason: couponCalc.unavailabilityReason || '优惠券不可用',
-            reasonCode: 'COUPON_THRESHOLD_NOT_MET'
+            reason: '优惠券与当前活动不能叠加',
+            reasonCode: 'EXCLUDED_BY_OTHER'
           });
+          continue;
         }
+
+        appliedCoupons.push({
+          promotionId: couponCalc.couponId,
+          promotionName: couponCalc.couponName,
+          promotionType: 'coupon',
+          applied: true,
+          discountAmount: couponCalc.discountAmount,
+          hitReason: '满足优惠券使用条件',
+          affectedItems: couponCalc.affectedItems,
+          displayText: this.resultExplainer.generateCouponDisplayText(
+            couponCalc.coupon,
+            couponCalc.discountAmount
+          )
+        });
+
+        allocationRequests.push({
+          totalDiscount: couponCalc.discountAmount,
+          affectedItemIds: couponCalc.affectedItems,
+          promotionId: couponCalc.couponId,
+          promotionName: couponCalc.couponName,
+          promotionType: 'coupon'
+        });
+
+        resourceUsages.push(this.couponHandler.calculateResourceUsage(couponCalc.coupon, couponCalc.discountAmount));
+
+        const stepDetail: CalculationStepDetail = {
+          id: couponCalc.couponId,
+          name: couponCalc.couponName,
+          type: 'coupon',
+          baseAmount: couponCalc.matchedAmount,
+          discountAmount: couponCalc.discountAmount,
+          affectedItems: couponCalc.matchedItems.map(item => ({
+            lineId: item.lineId,
+            skuId: item.skuId,
+            name: item.name,
+            baseAmount: calculateItemTotal(item),
+            shareAmount: 0,
+            finalAmount: calculateItemTotal(item)
+          }))
+        };
+        calculationSteps.push(stepDetail);
+      }
+
+      for (const couponCalc of unavailable) {
+        unavailableCoupons.push({
+          promotionId: couponCalc.couponId,
+          promotionName: couponCalc.couponName,
+          reason: couponCalc.unavailabilityReason || '优惠券不可用',
+          reasonCode: couponCalc.unavailabilityReasonCode || 'COUPON_NOT_APPLICABLE'
+        });
       }
     }
 
     items = this.discountAllocator.allocateMultipleDiscounts(items, allocationRequests);
 
+    for (const step of calculationSteps) {
+      let totalShareForStep = 0;
+      for (const affectedItem of step.affectedItems) {
+        const cartItem = items.find(i => i.lineId === affectedItem.lineId);
+        if (cartItem && cartItem.shareDetail) {
+          const share = cartItem.shareDetail.find(s => s.promotionId === step.id);
+          if (share) {
+            affectedItem.shareAmount = share.discountAmount;
+            totalShareForStep += share.discountAmount;
+          }
+        }
+        affectedItem.finalAmount = roundToTwo(affectedItem.baseAmount - affectedItem.shareAmount);
+      }
+
+      step.roundingDiff = roundToTwo(step.discountAmount - totalShareForStep);
+      if (Math.abs(step.roundingDiff) > 0.001 && step.affectedItems.length > 0) {
+        step.affectedItems[step.affectedItems.length - 1].roundingDiff = step.roundingDiff;
+        step.affectedItems[step.affectedItems.length - 1].finalAmount = roundToTwo(
+          step.affectedItems[step.affectedItems.length - 1].finalAmount - step.roundingDiff
+        );
+      }
+    }
+
     let finalTotal = items.reduce((sum, item) => sum + (item.finalPrice || 0), 0);
     finalTotal = roundToTwo(Math.max(0, finalTotal));
 
+    const totalPromotionDiscount = roundToTwo(
+      appliedPromotions.reduce((sum, p) => sum + p.discountAmount, 0)
+    );
+    const totalCouponDiscount = roundToTwo(
+      appliedCoupons.reduce((sum, c) => sum + c.discountAmount, 0)
+    );
     const totalDiscount = roundToTwo(originalTotal - finalTotal);
 
     const displayMessages = this.resultExplainer.generateSummaryMessages(
@@ -288,13 +374,17 @@ export class TrialCalculator {
       originalTotal,
       finalTotal,
       totalDiscount,
+      totalPromotionDiscount,
+      totalCouponDiscount,
       appliedPromotions,
       unavailablePromotions,
       appliedCoupons,
       unavailableCoupons,
       cartItems: items,
       gifts: allGifts,
-      displayMessages
+      displayMessages,
+      resourceUsages,
+      calculationSteps
     };
   }
 

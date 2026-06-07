@@ -10,7 +10,8 @@ import {
   StepGiftRule,
   CartItem,
   GiftItem,
-  Member
+  Member,
+  ResourceUsage
 } from '../types';
 import { roundToTwo, calculateItemTotal } from '../utils';
 import { MatchResult } from './productMatcher';
@@ -289,5 +290,62 @@ export class DiscountCalculator {
       affectedItems: matchedItems.map(item => item.lineId),
       gifts
     };
+  }
+
+  calculateResourceUsage(promotion: Promotion, discountAmount: number): ResourceUsage {
+    const usage: ResourceUsage = {
+      id: promotion.id,
+      name: promotion.name,
+      type: 'promotion',
+      estimatedBudgetConsumption: discountAmount > 0 ? discountAmount : undefined,
+      estimatedCountConsumption: 1
+    };
+
+    if (promotion.totalBudget !== undefined) {
+      usage.budgetUsed = promotion.usedBudget || 0;
+      usage.budgetRemaining = promotion.totalBudget - (promotion.usedBudget || 0);
+    }
+    if (promotion.totalUsageLimit !== undefined) {
+      usage.countUsed = promotion.usedCount || 0;
+      usage.countRemaining = promotion.totalUsageLimit - (promotion.usedCount || 0);
+    }
+    if (promotion.perUserLimit !== undefined) {
+      usage.userCountUsed = promotion.userUsedCount || 0;
+      usage.userCountRemaining = promotion.perUserLimit - (promotion.userUsedCount || 0);
+    }
+
+    return usage;
+  }
+
+  checkResourceLimits(promotion: Promotion, discountAmount: number): { valid: boolean; reason?: string; reasonCode?: string } {
+    if (promotion.totalUsageLimit !== undefined && promotion.usedCount !== undefined) {
+      if (promotion.usedCount >= promotion.totalUsageLimit) {
+        return { valid: false, reason: '活动总使用次数已达上限', reasonCode: 'USAGE_LIMIT_REACHED' };
+      }
+    }
+
+    if (promotion.perUserLimit !== undefined && promotion.userUsedCount !== undefined) {
+      if (promotion.userUsedCount >= promotion.perUserLimit) {
+        return { valid: false, reason: `用户已达活动使用上限，最多可用 ${promotion.perUserLimit} 次`, reasonCode: 'USER_LIMIT_REACHED' };
+      }
+    }
+
+    if (promotion.totalBudget !== undefined && promotion.usedBudget !== undefined) {
+      if (promotion.usedBudget >= promotion.totalBudget) {
+        return { valid: false, reason: '活动预算已用完', reasonCode: 'BUDGET_EXHAUSTED' };
+      }
+      if (discountAmount > 0) {
+        const remainingBudget = promotion.totalBudget - promotion.usedBudget;
+        if (discountAmount > remainingBudget) {
+          return {
+            valid: false,
+            reason: `活动剩余预算不足，剩余 ${remainingBudget.toFixed(2)} 元，需 ${discountAmount.toFixed(2)} 元`,
+            reasonCode: 'BUDGET_INSUFFICIENT'
+          };
+        }
+      }
+    }
+
+    return { valid: true };
   }
 }
