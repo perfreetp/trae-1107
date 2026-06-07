@@ -1,0 +1,25 @@
+{
+  "name": "retail-promotion-sdk",
+  "version": "1.0.0",
+  "description": "零售促销规则 SDK - 支持商品匹配、会员判断、优惠计算、券包处理、活动排斥、结果解释、试算校验",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "node dist/example.js",
+    "dev": "tsc --watch"
+  },
+  "keywords": [
+    "retail",
+    "promotion",
+    "sdk",
+    "coupon",
+    "discount"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/node": "^20.0.0"
+  }
+}
